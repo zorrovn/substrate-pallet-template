@@ -1,12 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-/// Edit this file to define custom logic or remove it if it is not needed.
-/// Learn more about FRAME and the core library of Substrate FRAME pallets:
-/// https://substrate.dev/docs/en/knowledgebase/runtime/frame
-
 use frame_support::{decl_module, decl_storage, decl_event, decl_error, dispatch, traits::Get};
+use frame_support::inherent::Vec;
 use frame_system::ensure_signed;
-
 #[cfg(test)]
 mod mock;
 
@@ -22,13 +18,11 @@ pub trait Config: frame_system::Config {
 // The pallet's runtime storage items.
 // https://substrate.dev/docs/en/knowledgebase/runtime/storage
 decl_storage! {
-	// A unique name is used to ensure that the pallet's storage items are isolated.
-	// This name may be updated, but each pallet in the runtime must use a unique name.
-	// ---------------------------------vvvvvvvvvvvvvv
-	trait Store for Module<T: Config> as TemplateModule {
-		// Learn more about declaring storage items:
-		// https://substrate.dev/docs/en/knowledgebase/runtime/storage#declaring-storage-items
-		Something get(fn something): Option<u32>;
+	trait Store for Module<T: Config> as IdentityModule {
+		pub Identity get(fn get_identity): map hasher(blake2_128_concat) Vec<u8> => Option<T::AccountId>;
+
+		// ( identity, attribute_key ) => attribute_value
+		pub Attribute get(fn get_attribute): map hasher(blake2_128_concat) (Vec<u8>, Vec<u8>) => Vec<u8>;
 	}
 }
 
@@ -36,25 +30,26 @@ decl_storage! {
 // https://substrate.dev/docs/en/knowledgebase/runtime/events
 decl_event!(
 	pub enum Event<T> where AccountId = <T as frame_system::Config>::AccountId {
-		/// Event documentation should end with an array that provides descriptive names for event
-		/// parameters. [something, who]
-		SomethingStored(u32, AccountId),
+		IdentityCreated(Vec<u8>, AccountId),
+
+		// Identity, Attribute Key, Attribute Value
+		AttributeAdded(Vec<u8>, Vec<u8>, Vec<u8>),
+
+		// Identity, Attribute Key
+		AttributeRemoved(Vec<u8>, Vec<u8>),
 	}
 );
 
 // Errors inform users that something went wrong.
 decl_error! {
 	pub enum Error for Module<T: Config> {
-		/// Error names should be descriptive.
-		NoneValue,
-		/// Errors should have helpful documentation associated with them.
-		StorageOverflow,
+		IdentityAlreadyClaimed,
+		IdentityNotFound,
+		NotAuthorized,
+		AttributeNotFound,
 	}
 }
 
-// Dispatchable functions allows users to interact with the pallet and invoke state changes.
-// These functions materialize as "extrinsics", which are often compared to transactions.
-// Dispatchable functions must be annotated with a weight and must return a DispatchResult.
 decl_module! {
 	pub struct Module<T: Config> for enum Call where origin: T::Origin {
 		// Errors must be initialized if they are used by the pallet.
@@ -63,39 +58,76 @@ decl_module! {
 		// Events must be initialized if they are used by the pallet.
 		fn deposit_event() = default;
 
-		/// An example dispatchable that takes a singles value as a parameter, writes the value to
-		/// storage and emits an event. This function must be dispatched by a signed extrinsic.
-		#[weight = 10_000 + T::DbWeight::get().writes(1)]
-		pub fn do_something(origin, something: u32) -> dispatch::DispatchResult {
-			// Check that the extrinsic was signed and get the signer.
-			// This function will return an error if the extrinsic is not signed.
-			// https://substrate.dev/docs/en/knowledgebase/runtime/origin
+		#[weight = 10_000 + T::DbWeight::get().reads_writes(1, 1)]
+		pub fn create_identity(
+			origin, 
+			identity: Vec<u8>
+		) -> dispatch::DispatchResult {
+
 			let who = ensure_signed(origin)?;
 
-			// Update storage.
-			Something::put(something);
-
-			// Emit an event.
-			Self::deposit_event(RawEvent::SomethingStored(something, who));
-			// Return a successful DispatchResult
-			Ok(())
+			match <Identity<T>>::get(&identity) {
+				// Return an error if signer is not identity owner
+				None => {
+					// Update storage.
+					<Identity<T>>::insert(&identity, &who);
+					// Emit an event.
+					Self::deposit_event(RawEvent::IdentityCreated(identity, who));
+					// Return a successful DispatchResult
+					Ok(())
+				},
+				Some(_) => Err(Error::<T>::IdentityAlreadyClaimed)?
+			}
+			
 		}
 
-		/// An example dispatchable that may throw a custom error.
+		// Allows identity owners to add attribute to their identity (key, value)
 		#[weight = 10_000 + T::DbWeight::get().reads_writes(1,1)]
-		pub fn cause_error(origin) -> dispatch::DispatchResult {
-			let _who = ensure_signed(origin)?;
+		pub fn add_attribute(
+			origin,
+			identity: Vec<u8>,
+			attribute_key: Vec<u8>,
+			attribute_value: Vec<u8>
+		) -> dispatch::DispatchResult {
+			let who = ensure_signed(origin)?;
 
 			// Read a value from storage.
-			match Something::get() {
-				// Return an error if the value has not been set.
-				None => Err(Error::<T>::NoneValue)?,
-				Some(old) => {
-					// Increment the value read from storage; will error in the event of overflow.
-					let new = old.checked_add(1).ok_or(Error::<T>::StorageOverflow)?;
-					// Update the value in storage with the incremented result.
-					Something::put(new);
-					Ok(())
+			match <Identity<T>>::get(&identity) {
+				// Return an error if signer is not identity owner
+				None => Err(Error::<T>::IdentityNotFound)?,
+				Some(address) => {
+					if address != who {
+						return Err(Error::<T>::NotAuthorized)?
+					} else{
+						Attribute::insert((&identity, &attribute_key), &attribute_value);
+						Self::deposit_event(RawEvent::AttributeAdded(identity, attribute_key, attribute_value));
+						Ok(())
+					}
+				},
+			}
+		}
+
+		// Allows identity owners to remove identity
+		#[weight = 10_000 + T::DbWeight::get().reads_writes(1,1)]
+		pub fn remove_attribute(
+			origin,
+			identity: Vec<u8>,
+			attribute_key: Vec<u8>,
+		) -> dispatch::DispatchResult {
+			let who = ensure_signed(origin)?;
+
+			// Read a value from storage.
+			match <Identity<T>>::get(&identity) {
+				// Return an error if signer is not identity owner
+				None => Err(Error::<T>::IdentityNotFound)?,
+				Some(address) => {
+					if address != who {
+						return Err(Error::<T>::NotAuthorized)?
+					} else{
+						Attribute::remove((&identity, &attribute_key));
+						Self::deposit_event(RawEvent::AttributeRemoved(identity, attribute_key));
+						Ok(())
+					}
 				},
 			}
 		}

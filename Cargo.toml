@@ -4,8 +4,8 @@ description = 'FRAME pallet template for defining custom runtime logic.'
 edition = '2018'
 homepage = 'https://substrate.dev'
 license = 'Unlicense'
-name = 'pallet-template'
-repository = 'https://github.com/substrate-developer-hub/substrate-node-template/'
+name = 'pallet-identity'
+repository = 'https://github.com/zorrovn/substrate-pallet-template'
 version = '3.0.0'
 
 [package.metadata.docs.rs]
